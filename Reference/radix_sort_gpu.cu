@@ -1,10 +1,13 @@
 /*
- * radix_sort_gpu.cu -- CUDA implementation of LSD radix sort
  * EC527 Final Project: High-Performance Sorting
  * Team: Cynthia Young & Phyliss Darko
+
+ * GPU scaffolding inspired by Lab 7 (CUDA MMM) starter code from EC527 (Prof. Herbordt, BU)
+
+ * radix_sort_gpu.cu -- CUDA implementation of LSD radix sort
  *
  * Compile: nvcc -arch=compute_86 -code=sm_86 radix_sort_gpu.cu -o radix_sort_gpu
- * (A40 GPU on SCC is compute capability 8.6)
+ * (A40 GPU on SCC is an example. adjusted based on chosen gpu)
  *
  * Branches from radix_sort_cpu.c. Input generation, validation, array sizes,
  * and output format are identical so CPU and GPU results can be compared directly.
@@ -12,10 +15,10 @@
  * Transfer timing is reported separately from compute timing so we can see
  * how much overhead the host <-> device copies add at each array size.
  *
- * The three GPU kernels are stubbed out below -- implement them one at a time:
- *   1. count_kernel   -- histogram per pass
- *   2. scan_kernel    -- parallel prefix sum over 256 counts
- *   3. scatter_kernel -- place each element at its output position
+ * The three GPU kernels are stubbed out below - implement them one at a time:
+ *   1. count_kernel   - histogram per pass
+ *   2. scan_kernel    - parallel prefix sum over 256 counts
+ *   3. scatter_kernel - place each element at its output position
  *
  * The CPU reference sort is kept here for sanity checking during development.
  *
@@ -52,8 +55,8 @@ static long int test_sizes[NUM_SIZES] = {
 #define NUM_DIST 3
 static const char *dist_names[NUM_DIST] = { "random", "sorted", "reverse" };
 
-// ---------- timing ----------
 
+// ---------- timing ----------
 double interval(struct timespec start, struct timespec end)
 {
     struct timespec temp;
@@ -66,7 +69,7 @@ double interval(struct timespec start, struct timespec end)
     return ((double)temp.tv_sec) + ((double)temp.tv_nsec) * 1.0e-9;
 }
 
-// forces CPU out of power-saving mode before timing starts -- identical to lab files
+// forces CPU out of power-saving mode before timing starts - identical to lab files
 double wakeup_delay()
 {
     double meas = 0; int i, j;
@@ -133,7 +136,7 @@ int validate(unsigned int *result, unsigned int *ref, long int n)
     return 1;
 }
 
-// ---------- CPU reference -- keep for sanity checking during GPU development ----------
+// ---------- CPU reference - keep for sanity checking during GPU development ----------
 
 void radix_sort_pass_cpu(unsigned int *in, unsigned int *out, long int n, int shift)
 {
@@ -162,6 +165,7 @@ void radix_sort_cpu(unsigned int *arr, unsigned int *scratch, long int n)
     radix_sort_pass_cpu(scratch, arr,     n, 24);
 }
 
+
 // ---------- GPU kernels ----------
 
 /*
@@ -172,8 +176,6 @@ void radix_sort_cpu(unsigned int *arr, unsigned int *scratch, long int n)
  * histogram in shared memory. After all threads finish, the block
  * adds its local histogram into the global count array.
  *
- * Hint: declare __shared__ long int local_count[RADIX]
- * Hint: use atomicAdd() for both shared and global accumulation
  */
 __global__ void count_kernel(unsigned int *in, long int n,
                               int shift, long int *count)
@@ -190,8 +192,6 @@ __global__ void count_kernel(unsigned int *in, long int n,
  *
  * A single block with 256 threads is sufficient for 256 elements.
  *
- * Hint: Hillis-Steele or Blelloch scan both work here
- * Hint: use __shared__ memory and __syncthreads()
  */
 __global__ void scan_kernel(long int *count, long int *prefix)
 {
@@ -210,6 +210,8 @@ __global__ void scatter_kernel(unsigned int *in, unsigned int *out,
 {
     // TODO: implement
 }
+
+
 
 // ---------- GPU sort driver ----------
 
@@ -242,11 +244,13 @@ void radix_sort_gpu(unsigned int *d_arr, unsigned int *d_scratch,
     }
 }
 
-// total bytes moved across all passes -- each pass reads n and writes n
+// total bytes moved across all passes - each pass reads n and writes n
 double bytes_per_sort(long int n)
 {
     return (double)PASSES * 2.0 * (double)n * sizeof(unsigned int);
 }
+
+
 
 // ---------- main ----------
 
@@ -255,7 +259,7 @@ int main(int argc, char *argv[])
     double wd;
     struct timespec time_start, time_stop;
 
-    printf("EC527 Final Project -- Radix Sort (GPU)\n");
+    printf("EC527 Final Project - Radix Sort (GPU)\n");
     printf("LSD radix sort: %d-bit radix, %d passes, 32-bit unsigned int\n\n",
            RADIX_BITS, PASSES);
 
