@@ -1,9 +1,9 @@
 /*
  * EC527 Final Project: High-Performance Sorting
  * Team: Cynthia Young & Phyliss Darko
- 
+ *
  * Inspired by and structured after Lab 2 starter code from EC527 (Prof. Herbordt, BU)
- 
+ *
  * radix_sort_cpu.c - Serial reference implementation of LSD radix sort
  *
  * Compile: gcc -O1 radix_sort_cpu.c -lrt -o radix_sort_cpu
