@@ -1,9 +1,9 @@
 /*
  * EC527 Final Project: High-Performance Sorting
  * Team: Cynthia Young & Phyliss Darko
-
+ *
  * GPU scaffolding inspired by Lab 7 (CUDA MMM) starter code from EC527 (Prof. Herbordt, BU)
-
+ *
  * radix_sort_gpu.cu -- CUDA implementation of LSD radix sort
  *
  * Compile: nvcc -arch=compute_86 -code=sm_86 radix_sort_gpu.cu -o radix_sort_gpu
@@ -49,7 +49,9 @@ static long int test_sizes[NUM_SIZES] = {
     8000000,     //   8M
     16000000,    //  16M
     32000000,    //  32M
-    64000000     //  64M
+    64000000,    //  64M
+    128000000,   //  128M
+    256000000    //  256M
 };
 
 #define NUM_DIST 3
