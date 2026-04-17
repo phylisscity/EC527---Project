@@ -49,8 +49,11 @@ static long int test_sizes[NUM_SIZES] = {
     8000000,     //   8M
     16000000,    //  16M
     32000000,    //  32M
-    64000000     //  64M
+    64000000,    //  64M
+    128000000,   //  128M
+    256000000    //  256M
 };
+
 
 #define NUM_DIST 3
 static const char *dist_names[NUM_DIST] = { "random", "sorted", "reverse" };
