@@ -38,7 +38,7 @@
 #define CPNS        3.0         // cycles per nanosecond - adjust to machine
                                 // check with lscpu
 
-#define NUM_SIZES   7
+#define NUM_SIZES   9
 static long int test_sizes[NUM_SIZES] = {
     1000000,     //   1M
     2000000,     //   2M
