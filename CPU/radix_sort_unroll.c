@@ -4,16 +4,19 @@
  *
  * Inspired by and structured after Lab 2 starter code from EC527 (Prof. Herbordt, BU)
  *
- * radix_sort_cpu.c - Serial reference implementation of LSD radix sort
+ * radix_sort_unroll.c - Loop-unrolled LSD radix sort
  *
- * Compile: gcc -O1 radix_sort_cpu.c -lrt -o radix_sort_cpu
+ * Compile: gcc -O1 radix_sort_unroll.c -lrt -o radix_sort_unroll
  *
- * This is the shared serial baseline. Both the CPU optimizations
- * and the CUDA GPU version branch from this code.
+ * Optimization over serial baseline: 4x unrolled count loop with
+ * independent accumulators to increase ILP in the count step.
+ * Each pass over N elements now does 4 counts per iteration,
+ * reducing loop overhead and exposing parallel execution units.
+ * Same idea as combine5/combine6 from Lab 2.
  *
  * Algorithm: LSD (least significant digit) radix sort
  *   - 8-bit radix: 256 buckets, 4 passes for 32-bit unsigned integers
- *   - Each pass: count -> scan (prefix sum) -> scatter
+ *   - Each pass: count (unrolled) -> scan (prefix sum) -> scatter
  *   - No comparisons ever - purely bucket-based
  *
  * Input distributions tested:
@@ -47,9 +50,8 @@ static long int test_sizes[NUM_SIZES] = {
     16000000,    //  16M
     32000000,    //  32M
     64000000,    //  64M
-    128000000,   //  128M
-    256000000    //  256M
-    
+    128000000,   // 128M
+    256000000    // 256M
 };
 
 #define NUM_DIST 3
@@ -127,10 +129,7 @@ int cmp_uint(const void *a, const void *b)
 // returns 1 if correct, 0 if mismatch found
 int validate(unsigned int *result, unsigned int *ref, long int n)
 {
-    // sort the reference copy with qsort
     qsort(ref, n, sizeof(unsigned int), cmp_uint);
-
-    // compare element by element
     for (long int i = 0; i < n; i++) {
         if (result[i] != ref[i]) {
             printf("  VALIDATION FAILED at index %ld: got %u expected %u\n",
@@ -145,14 +144,17 @@ int validate(unsigned int *result, unsigned int *ref, long int n)
 // ---------- core radix sort ----------
 
 /*
- * radix_sort_pass: one pass of LSD radix sort
+ * radix_sort_pass: one pass of LSD radix sort with unrolled count step
  *
  * Extracts 8 bits starting at bit position 'shift' from each element,
  * uses those bits as a bucket index (0-255), then scatters elements
  * into the output array in stable order.
  *
  * Steps:
- *   1. Count: tally how many elements fall in each bucket
+ *   1. Count (unrolled): 4x unrolled with independent accumulators
+ *      - four separate count arrays eliminate the loop-carried dependency
+ *        on a single count[], letting the CPU issue multiple increments/cycle
+ *      - combined into one count[] at the end
  *   2. Scan:  prefix sum over counts -> starting position per bucket
  *   3. Scatter: place each element at its correct output position
  */
@@ -161,10 +163,30 @@ void radix_sort_pass(unsigned int *in, unsigned int *out, long int n, int shift)
     long int count[RADIX];
     long int prefix[RADIX];
 
-    // step 1: count
+    // step 1: count - 4x unrolled with independent accumulators
+    // four separate count arrays let the CPU execute iterations in parallel
+    // combined into one at the end
+    long int count0[RADIX], count1[RADIX], count2[RADIX], count3[RADIX];
+    memset(count0, 0, RADIX * sizeof(long int));
+    memset(count1, 0, RADIX * sizeof(long int));
+    memset(count2, 0, RADIX * sizeof(long int));
+    memset(count3, 0, RADIX * sizeof(long int));
+
+    long int n4 = n & ~3L;  // round down to nearest multiple of 4
+    for (long int i = 0; i < n4; i += 4) {
+        count0[(in[i+0] >> shift) & 0xFF]++;
+        count1[(in[i+1] >> shift) & 0xFF]++;
+        count2[(in[i+2] >> shift) & 0xFF]++;
+        count3[(in[i+3] >> shift) & 0xFF]++;
+    }
+    // handle leftover elements (when n is not a multiple of 4)
+    for (long int i = n4; i < n; i++)
+        count0[(in[i] >> shift) & 0xFF]++;
+
+    // combine four accumulators into single count[]
     memset(count, 0, sizeof(count));
-    for (long int i = 0; i < n; i++)
-        count[(in[i] >> shift) & 0xFF]++;
+    for (int b = 0; b < RADIX; b++)
+        count[b] = count0[b] + count1[b] + count2[b] + count3[b];
 
     // step 2: exclusive prefix sum - prefix[b] = starting output index for bucket b
     prefix[0] = 0;
@@ -206,15 +228,14 @@ int main(int argc, char *argv[])
     double wd;
     struct timespec time_start, time_stop;
 
-    printf("EC527 Final Project - Serial Radix Sort (CPU reference)\n");
-    printf("LSD radix sort: %d-bit radix, %d passes, 32-bit unsigned int\n\n",
+    printf("EC527 Final Project - Unrolled Radix Sort\n");
+    printf("LSD radix sort: %d-bit radix, %d passes, count loop unrolled 4x\n\n",
            RADIX_BITS, PASSES);
 
     wd = wakeup_delay();
-    srand(42);  // fixed seed for reproducibility - matches GPU version
+    srand(42);
 
-    // columns: dist, size, time_sec, cycles, GB/s, valid
-    printf("dist, size, time_sec, cycles, GB_per_sec, valid\n");
+    printf("version, dist, size, time_sec, cycles, GB_per_sec, valid\n");
 
     for (int d = 0; d < NUM_DIST; d++) {
         for (int s = 0; s < NUM_SIZES; s++) {
@@ -233,7 +254,6 @@ int main(int argc, char *argv[])
             else if (d == 1) gen_sorted (arr, n);
             else             gen_reverse(arr, n);
 
-            // save input before sorting for validation
             memcpy(ref, arr, n * sizeof(unsigned int));
 
             clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &time_start);
@@ -245,7 +265,7 @@ int main(int argc, char *argv[])
             double gbps  = bytes_per_sort(n) / t / 1.0e9;
             int ok       = validate(arr, ref, n);
 
-            printf("%s, %ld, %.6f, %ld, %.3f, %s\n",
+            printf("unroll, %s, %ld, %.6f, %ld, %.3f, %s\n",
                    dist_names[d], n, t, cyc, gbps, ok ? "PASS" : "FAIL");
 
             free(arr); free(scratch); free(ref);

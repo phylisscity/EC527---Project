@@ -4,16 +4,18 @@
  *
  * Inspired by and structured after Lab 2 starter code from EC527 (Prof. Herbordt, BU)
  *
- * radix_sort_cpu.c - Serial reference implementation of LSD radix sort
+ * radix_sort_cache.c - Cache-blocked LSD radix sort
  *
- * Compile: gcc -O1 radix_sort_cpu.c -lrt -o radix_sort_cpu
+ * Compile: gcc -O1 radix_sort_cache.c -lrt -o radix_sort_cache
  *
- * This is the shared serial baseline. Both the CPU optimizations
- * and the CUDA GPU version branch from this code.
+ * Optimization over serial baseline: cache blocking on the scatter step.
+ * The serial version scatters one element at a time across the full output
+ * array — at large N every write is a cache miss. This version processes
+ * input in BLOCK_SIZE chunks so active scatter writes stay in L2 cache.
  *
  * Algorithm: LSD (least significant digit) radix sort
  *   - 8-bit radix: 256 buckets, 4 passes for 32-bit unsigned integers
- *   - Each pass: count -> scan (prefix sum) -> scatter
+ *   - Each pass: count -> scan (prefix sum) -> blocked scatter
  *   - No comparisons ever - purely bucket-based
  *
  * Input distributions tested:
@@ -35,6 +37,10 @@
 #define RADIX       256         // 2^RADIX_BITS buckets
 #define PASSES      4           // 32-bit int / 8 bits per pass
 
+// chunk size for blocked scatter
+// 4096 * 4 bytes = 16KB input chunk + 256*8 = 2KB for counts fits comfortably in L2
+#define BLOCK_SIZE  4096
+
 #define CPNS        5.8         // cycles per nanosecond - adjust to machine
                                 // check with lscpu
 
@@ -47,9 +53,8 @@ static long int test_sizes[NUM_SIZES] = {
     16000000,    //  16M
     32000000,    //  32M
     64000000,    //  64M
-    128000000,   //  128M
-    256000000    //  256M
-    
+    128000000,   // 128M
+    256000000    // 256M
 };
 
 #define NUM_DIST 3
@@ -127,10 +132,7 @@ int cmp_uint(const void *a, const void *b)
 // returns 1 if correct, 0 if mismatch found
 int validate(unsigned int *result, unsigned int *ref, long int n)
 {
-    // sort the reference copy with qsort
     qsort(ref, n, sizeof(unsigned int), cmp_uint);
-
-    // compare element by element
     for (long int i = 0; i < n; i++) {
         if (result[i] != ref[i]) {
             printf("  VALIDATION FAILED at index %ld: got %u expected %u\n",
@@ -142,39 +144,64 @@ int validate(unsigned int *result, unsigned int *ref, long int n)
 }
 
 
-// ---------- core radix sort ----------
-
+// ---------- cache-blocked radix sort pass ----------
 /*
- * radix_sort_pass: one pass of LSD radix sort
+ * radix_sort_pass: one cache-blocked pass of LSD radix sort
  *
- * Extracts 8 bits starting at bit position 'shift' from each element,
- * uses those bits as a bucket index (0-255), then scatters elements
- * into the output array in stable order.
+ * Same count -> scan -> scatter structure as the serial baseline,
+ * but scatter is broken into BLOCK_SIZE chunks.
  *
- * Steps:
- *   1. Count: tally how many elements fall in each bucket
- *   2. Scan:  prefix sum over counts -> starting position per bucket
- *   3. Scatter: place each element at its correct output position
+ * Phase 1 - global count: full pass over input to tally bucket sizes.
+ *   Needed upfront so we can compute correct output positions.
+ *
+ * Phase 2 - blocked scatter: process BLOCK_SIZE elements at a time.
+ *   Each block re-counts its own elements, computes local start positions
+ *   on top of the global prefix, then scatters only that block's elements.
+ *   Keeping the active working set small reduces scatter cache misses
+ *   compared to the serial version, which scatters across the full array.
  */
 void radix_sort_pass(unsigned int *in, unsigned int *out, long int n, int shift)
 {
-    long int count[RADIX];
+    long int global_count[RADIX];
     long int prefix[RADIX];
+    long int block_count[RADIX];
+    long int block_prefix[RADIX];
+    long int placed[RADIX];
 
-    // step 1: count
-    memset(count, 0, sizeof(count));
+    // phase 1: global count
+    memset(global_count, 0, sizeof(global_count));
     for (long int i = 0; i < n; i++)
-        count[(in[i] >> shift) & 0xFF]++;
+        global_count[(in[i] >> shift) & 0xFF]++;
 
-    // step 2: exclusive prefix sum - prefix[b] = starting output index for bucket b
+    // global prefix sum - prefix[b] = starting output index for bucket b
     prefix[0] = 0;
     for (int b = 1; b < RADIX; b++)
-        prefix[b] = prefix[b-1] + count[b-1];
+        prefix[b] = prefix[b-1] + global_count[b-1];
 
-    // step 3: scatter - iterate forward to preserve stability
-    for (long int i = 0; i < n; i++) {
-        unsigned int bucket = (in[i] >> shift) & 0xFF;
-        out[prefix[bucket]++] = in[i];
+    // phase 2: blocked scatter
+    memset(placed, 0, sizeof(placed));
+    for (long int start = 0; start < n; start += BLOCK_SIZE) {
+        long int end = start + BLOCK_SIZE;
+        if (end > n) end = n;
+
+        // count elements in this block per bucket
+        memset(block_count, 0, sizeof(block_count));
+        for (long int i = start; i < end; i++)
+            block_count[(in[i] >> shift) & 0xFF]++;
+
+        // local start = global bucket start + elements already placed from prior blocks
+        for (int b = 0; b < RADIX; b++)
+            block_prefix[b] = prefix[b] + placed[b];
+
+        // scatter this block's elements into output
+        for (long int i = start; i < end; i++) {
+            unsigned int bucket = (in[i] >> shift) & 0xFF;
+            out[block_prefix[bucket]++] = in[i];
+        }
+
+        // update placed count for next block
+        for (int b = 0; b < RADIX; b++)
+            placed[b] += block_count[b];
     }
 }
 
@@ -206,15 +233,14 @@ int main(int argc, char *argv[])
     double wd;
     struct timespec time_start, time_stop;
 
-    printf("EC527 Final Project - Serial Radix Sort (CPU reference)\n");
-    printf("LSD radix sort: %d-bit radix, %d passes, 32-bit unsigned int\n\n",
-           RADIX_BITS, PASSES);
+    printf("EC527 Final Project - Cache-Blocked Radix Sort\n");
+    printf("LSD radix sort: %d-bit radix, %d passes, block size: %d\n\n",
+           RADIX_BITS, PASSES, BLOCK_SIZE);
 
     wd = wakeup_delay();
-    srand(42);  // fixed seed for reproducibility - matches GPU version
+    srand(42);
 
-    // columns: dist, size, time_sec, cycles, GB/s, valid
-    printf("dist, size, time_sec, cycles, GB_per_sec, valid\n");
+    printf("version, dist, size, time_sec, cycles, GB_per_sec, valid\n");
 
     for (int d = 0; d < NUM_DIST; d++) {
         for (int s = 0; s < NUM_SIZES; s++) {
@@ -233,7 +259,6 @@ int main(int argc, char *argv[])
             else if (d == 1) gen_sorted (arr, n);
             else             gen_reverse(arr, n);
 
-            // save input before sorting for validation
             memcpy(ref, arr, n * sizeof(unsigned int));
 
             clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &time_start);
@@ -245,7 +270,7 @@ int main(int argc, char *argv[])
             double gbps  = bytes_per_sort(n) / t / 1.0e9;
             int ok       = validate(arr, ref, n);
 
-            printf("%s, %ld, %.6f, %ld, %.3f, %s\n",
+            printf("cache, %s, %ld, %.6f, %ld, %.3f, %s\n",
                    dist_names[d], n, t, cyc, gbps, ok ? "PASS" : "FAIL");
 
             free(arr); free(scratch); free(ref);
